@@ -1,15 +1,20 @@
 PLUGIN.Title = 'Maze Plugin'
-PLUGIN.Description = 'Teleporter Addon with economy support'
+PLUGIN.Description = 'Plugin that runs the awesome fucking maze'
 PLUGIN.Author = 'camupod'
 PLUGIN.Version = '0.0.1'
 
+local MazeDefaultConfig = {
+    VERSION = '0.0.1',
+    yOffset = 0.5,
+    items = {}
+}
 local dateTime = util.GetStaticPropertyGetter(System.DateTime, 'Now')
 
 function PLUGIN:Init()
     print('Maze :: Plugin loading...')
 
     print('Maze :: Loading data file')
-    self:LoadMazedata()
+    self:LoadMazeData()
 
     print('Maze :: Loading config file')
     self:LoadMazeConfig()
@@ -33,6 +38,59 @@ function PLUGIN:Init()
     print('Maze :: Plugin loaded')
 end
 
+function PLUGIN:HandleMazeCommand(netuser, cmd, args)
+    if (args[1]) then
+        args[1] = string.lower(args[1])
+    end
+    if (args[2]) then
+        args[2] = string.lower(args[2])
+    end
+
+    local canAdmin = netuser:CanAdmin()
+
+    if (not args[1]) then
+        self:GoToMaze(netuser)
+        return
+    elseif (args[1] == 'start') then
+        self:GoToMaze(netuser)
+        return
+    elseif (args[1] == 'quit') then
+        -- todo: implement quit
+        return
+    elseif (args[1] == 'add') then
+        if (not canAdmin) then
+            rust.Notice(netuser, 'Must be admin to do that!')
+            return
+        end
+        self:AddSpawnLocation(netuser, args[2])
+        return
+    elseif (args[1] == 'list') then
+        if (not canAdmin) then
+            rust.Notice(netuser, 'Must be admin to do that!')
+            return
+        end
+        self:ListSpawnLocations(netuser)
+        return
+    elseif (args[1] == 'delete') then
+        if (not canAdmin) then
+            rust.Notice(netuser, 'Must be admin to do that!')
+            return
+        end
+        self:DeleteSpawnLocation(netuser, args[2])
+        return
+    elseif (args[1] == 'reload') then
+        if (not canAdmin) then
+            rust.Notice(netuser, 'Must be admin to do that!')
+            return
+        end
+        self:ReloadConfig(netuser)
+        return
+    else
+        -- todo: show help
+        rust.SendChatToUser(netuser, 'unknown command')
+    end
+end
+
 function PLUGIN:SaveMazeConfig()
     self.MazeConfigFile:SetText(json.encode(self.MazeConfig, { indent = true }))
     self.MazeConfigFile:Save()
@@ -44,7 +102,9 @@ function PLUGIN:LoadMazeConfig()
     if (txt ~= '') then
         local MazeConfigTmp = json.decode(txt)
         if (not (MazeConfigTmp)) then
-            print ('Maze :: Config file is corrupted!')
+            print ('Maze :: Config file is corrupted! Loading defaults.')
+            self.MazeConfig = {}
+            self:LoadDefaultConfig()
             return false
         else
             self.MazeConfig = MazeConfigTmp
@@ -54,19 +114,19 @@ function PLUGIN:LoadMazeConfig()
     else
         print ('Maze :: Config file is empty, setting defaults!')
         self:LoadDefaultConfig() -- Update any new config values
-        self.MazeConfig = self.MazeDefaultConfig
-        self:SaveMazeConfig()
+    end
+end
+
+function PLUGIN:ReloadConfig(netuser)
+    if (self:LoadMazeConfig()) then
+        rust.Notice(netuser, 'Config reloaded!')
+    else
+        rust.Notice(netuser, 'There was an error reloading config...')
     end
 end
 
 function PLUGIN:LoadDefaultConfig()
-    local MazeDefaultConfig = {
-        VERSION = '0.0.1'
-        yOffset = 5
-        items = {}
-    }
-
-    if (not self.MazeConfig.VERSION or MazeDefaultConfig.VERSION > self.MazeConfig.VERSION) then
+    if (not self.MazeConfig.VERSION) then
         print ('Maze :: Creating Backup copy of Maze Config')
         self.MazeConfigBackup = util.GetDatafile('maze_config_backup')
         self.MazeConfigBackup:SetText(json.encode(self.MazeConfig, { indent = true }))
@@ -85,10 +145,9 @@ function PLUGIN:LoadDefaultConfig()
                 self.MazeConfig[_key] = nil
             end
         end
-    print ('Maze :: Done updating Config, Saving new config file')
-    self:SaveMazeConfig()
+        print ('Maze :: Done updating Config, Saving new config file')
+        self:SaveMazeConfig()
     end
-    return
 end
 
 function PLUGIN:LogSave()
@@ -126,14 +185,15 @@ function PLUGIN:LoadMazeData()
     end
 end
 
-function PLUGIN:addSpawnLocation(netuser, name)
-    if (not netuser:CanAdmin()) then
-        return
-    end
-
+function PLUGIN:AddSpawnLocation(netuser, name)
     if (not self.MazeData.spawnLocations) then
         -- first spawn point ?
         self.MazeData.spawnLocations = {}
+    end
+
+    if (name == 'all') then
+        rust.Notice(netuser, 'That is a reserved name! Please choose another...')
+        return
     end
 
     local coords = netuser.playerClient.lastKnownPosition
@@ -150,12 +210,17 @@ function PLUGIN:addSpawnLocation(netuser, name)
     rust.Notice(netuser, 'Spawn location set!')
 end
 
-function PLUGIN:deleteSpawnLocation(netuser, name)
-    if (not self:CanUserAdmin(netuser)) then
-        return
-    end
-
-    if (not self.MazeData.spawnLocations) then
+function PLUGIN:DeleteSpawnLocation(netuser, name)
+    if (not self.MazeData.spawnLocations or not self.MazeData.spawnLocations[name]) then
+        if (name == 'all') then
+            self.MazeData.spawnLocations = {}
+            self:SaveMazeData();
+            self.Log =  'Removed all maze spawn points'
+            self:LogSave()
+            rust.Notice(netuser, 'All spawn locations removed!')
+            return
+        end
+        rust.Notice(netuser, 'Spawn location not found!')
         return
     end
 
@@ -167,10 +232,32 @@ function PLUGIN:deleteSpawnLocation(netuser, name)
     rust.Notice(netuser, 'Spawn location removed!')
 end
 
-function PLUGIN:goToMaze(netuser)
+function PLUGIN:ListSpawnLocations(netuser, name)
+    if (not self.MazeData.spawnLocations) then
+        rust.SendChatToUser(netuser, 'no locations set')
+        return
+    end
+
+    local locations = self.MazeData.spawnLocations
+    for name, coords in pairs(locations) do
+        rust.SendChatToUser(netuser, name .. ': (' .. coords.x .. ', ' .. coords.y .. ', ' .. coords.z .. ')')
+    end
+end
+
+function getRandomFromTable(t)
+    local keys, count = {}, 1
+    for k,_ in pairs(t) do
+        keys[count] = k
+        count = count + 1
+    end
+
+    return t[keys[math.random(count - 1)]]
+end
+
+function PLUGIN:GoToMaze(netuser)
     local spawnLocations = self.MazeData.spawnLocations
     local playerCoords = netuser.playerClient.lastKnownPosition
-    local spawnCoords = spawnLocations[math.random(#spawnLocations)]
+    local spawnCoords = getRandomFromTable(spawnLocations)
 
     playerCoords.x = spawnCoords.x
     playerCoords.y = spawnCoords.y + self.MazeConfig.yOffset
@@ -182,14 +269,16 @@ function PLUGIN:goToMaze(netuser)
     -- clear their inventory, and give them a few things...
     local inv = rust.GetInventory(netuser)
     inv:Clear()
-    for item in self.MazeConfig.items
-        self.giveItem(netuser, item.name, item.amount)
+    for i, item in pairs(self.MazeConfig.items) do
+        self:GiveItem(netuser, item.name, item.amount)
     end
+
+    -- todo: make sure they spawn at a different starting point if they die
 
     rust.Notice(netuser, 'You are now in the maze. Good luck!')
 end
 
-function PLUGIN:giveItem(netuser, name, amount)
+function PLUGIN:GiveItem(netuser, name, amount)
     local item = tostring(name)
     local datablock = rust.GetDatablockByName(item)
     if (not datablock) then
